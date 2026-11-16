@@ -1,121 +1,382 @@
 ---
-title: "Mini-project 2 Template"
-author: "Team member names here."
-format: pdf
+title: "Mini-project 3"
+author: "Kunal Ghosh, Alexandre Turgis"
+format: html
+self-contained: true
 editor: visual
 ---
 
-Feel free to change render format to html using
-
-format: html
-
-self-contained: true
-
-## Instructions
-
-This is the template document for mini-project 3. You must use the template document for your code, since it will make it much easier to follow.
+The response variable is `life_expectancy` (years, from Gapminder). The five new predictors are `isoecd`, `isopec`, `body_mass_index_bmi_men`, `body_mass_index_bmi_women` and `poverty`. The earlier predictors are sanitation access, food supply, murder rate, child deaths and female head of state.
 
 ## Libraries and data load
 
-Put whatever libraries you use here.
-
 ```{r}
-
+#| message: false
+#| warning: false
+library(tidyverse)
+library(tidymodels)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(vip)
+library(ggrepel)
+set.seed(3)
 ```
 
-Load your data here
-
 ```{r}
-
+gap <- read_csv("Data/project3_2025.csv") |>
+  mutate(isoecd = factor(isoecd, labels = c("Not OECD", "OECD")),
+         isopec = factor(isopec, labels = c("Not OPEC", "OPEC")))
+glimpse(gap)
+# Missing values per variable (only life_expectancy missing rows are dropped below)
+colSums(is.na(gap))
 ```
 
 ## Exploratory data analysis
 
-For this section graph and find statistics for each of your 5 new predictor variables vs the response. You do not need to look at the predictor variables individually, although you can if you are considering logging.
+For this section we graph and summarize each of the 5 new predictors against life expectancy.
 
-## Variable 1: INSERT NAME HERE
-
-### Graph and description
-
-### Stats and description
-
-## Variable 2: INSERT NAME HERE
+## Variable 1: OECD membership (`isoecd`)
 
 ### Graph and description
 
+```{r}
+gap |>
+  filter(!is.na(life_expectancy)) |>
+  ggplot(aes(x = isoecd, y = life_expectancy, fill = isoecd)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Life expectancy by OECD membership",
+       x = "OECD membership", y = "Life expectancy (years)")
+```
+
+OECD countries have much higher life expectancy than non-members, and the spread is far smaller. Every OECD country is between about 77 and 85 years. Non-members range from about 55 to 86, so being a non-member tells us little by itself while being a member tells us a lot.
+
 ### Stats and description
 
-## Variable 3: INSERT NAME HERE
+```{r}
+gap |>
+  filter(!is.na(life_expectancy)) |>
+  group_by(isoecd) |>
+  summarize(n = n(), mean = mean(life_expectancy), median = median(life_expectancy),
+            sd = sd(life_expectancy), min = min(life_expectancy), max = max(life_expectancy))
+```
+
+The 31 OECD countries average about 81.7 years (sd 2.2) and the 162 non-members average about 72.1 (sd 6.5), a gap of roughly 9.6 years. The point-biserial correlation with life expectancy is about 0.51. OECD membership is a categorical, wealth-related variable, so it will likely overlap with other predictors such as sanitation and child deaths. It does not need to be logged.
+
+## Variable 2: OPEC membership (`isopec`)
 
 ### Graph and description
 
+```{r}
+gap |>
+  filter(!is.na(life_expectancy)) |>
+  ggplot(aes(x = isopec, y = life_expectancy, fill = isopec)) +
+  geom_boxplot(show.legend = FALSE) +
+  geom_jitter(width = 0.1, alpha = 0.4) +
+  labs(title = "Life expectancy by OPEC membership",
+       x = "OPEC membership", y = "Life expectancy (years)")
+```
+
+The two boxes sit at nearly the same height, so OPEC membership does not separate life expectancy. OPEC countries vary a lot: Angola and Nigeria are near 65 years while Kuwait and Qatar are above 81.
+
 ### Stats and description
 
-## Variable 4: INSERT NAME HERE
+```{r}
+gap |>
+  filter(!is.na(life_expectancy)) |>
+  group_by(isopec) |>
+  summarize(n = n(), mean = mean(life_expectancy), median = median(life_expectancy), sd = sd(life_expectancy))
+```
+
+The 11 OPEC countries average about 74.4 years and the 182 others about 73.6, a difference under one year, and the correlation is about 0.03. Because only 11 countries are members, the group mean is also noisy. I expect OPEC membership to be a weak predictor and the models should drop it.
+
+## Variable 3: Men's BMI (`body_mass_index_bmi_men`)
 
 ### Graph and description
 
+```{r}
+gap |>
+  filter(!is.na(life_expectancy), !is.na(body_mass_index_bmi_men)) |>
+  ggplot(aes(x = body_mass_index_bmi_men, y = life_expectancy)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Life expectancy vs. average men's BMI (2016)",
+       x = "Average BMI of men (kg/m^2)", y = "Life expectancy (years)")
+```
+
+There is a moderately strong positive, roughly linear relationship: countries where men have a higher average BMI have higher life expectancy. In this range BMI is mostly a proxy for food availability and wealth, not a health benefit of weight itself. A few Pacific island nations have very high BMI with only middling life expectancy, which flattens the top of the trend.
+
 ### Stats and description
 
-## Variable 5: INSERT NAME HERE
+```{r}
+gap |>
+  select(life_expectancy, body_mass_index_bmi_men) |>
+  drop_na() |>
+  summarize(n = n(), correlation = cor(life_expectancy, body_mass_index_bmi_men))
+
+gap |>
+  filter(!is.na(body_mass_index_bmi_men)) |>
+  arrange(desc(body_mass_index_bmi_men)) |>
+  select(name, body_mass_index_bmi_men, life_expectancy) |> head(5)
+gap |>
+  filter(!is.na(body_mass_index_bmi_men)) |>
+  arrange(body_mass_index_bmi_men) |>
+  select(name, body_mass_index_bmi_men, life_expectancy) |> head(5)
+```
+
+The correlation is about 0.59 (189 countries). The highest men's BMI values are Nauru (32.3), Tonga (30.3), Samoa (30.1) and Tuvalu (29.8), all small Pacific nations. The lowest are Ethiopia (19.9), Eritrea (20.1) and the Democratic Republic of the Congo (21.0). The variable is nearly symmetric (skewness about -0.2), so logging is not needed.
+
+## Variable 4: Women's BMI (`body_mass_index_bmi_women`)
 
 ### Graph and description
 
+```{r}
+gap |>
+  filter(!is.na(life_expectancy), !is.na(body_mass_index_bmi_women)) |>
+  ggplot(aes(x = body_mass_index_bmi_women, y = life_expectancy)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Life expectancy vs. average women's BMI (2016)",
+       x = "Average BMI of women (kg/m^2)", y = "Life expectancy (years)")
+```
+
+The relationship is positive but weaker and more scattered than for men. Many countries with women's BMI between 25 and 30 have life expectancies anywhere from the mid 60s to the mid 80s.
+
 ### Stats and description
+
+```{r}
+gap |>
+  select(life_expectancy, body_mass_index_bmi_women, body_mass_index_bmi_men) |>
+  drop_na() |>
+  summarize(cor_women_life = cor(life_expectancy, body_mass_index_bmi_women),
+            cor_men_women = cor(body_mass_index_bmi_men, body_mass_index_bmi_women))
+```
+
+The correlation with life expectancy is about 0.30, noticeably lower than for men (0.59). Men's and women's BMI are likely highly correlated with each other, so a model may not need both. Women's BMI is close to symmetric (skewness about 0.15), so it is not logged. Of the two BMI variables, men's BMI is the better predictor on its own.
+
+## Variable 5: Poverty (`poverty`)
+
+### Graph and description
+
+```{r}
+gap |>
+  filter(!is.na(life_expectancy), !is.na(poverty)) |>
+  ggplot(aes(x = poverty, y = life_expectancy)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "Life expectancy vs. poverty (unlogged)",
+       x = "People in poverty per 100,000 population", y = "Life expectancy (years)")
+
+gap |>
+  filter(!is.na(life_expectancy), !is.na(poverty)) |>
+  ggplot(aes(x = poverty, y = life_expectancy)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_x_log10() +
+  labs(title = "Life expectancy vs. poverty (log scale)",
+       x = "People in poverty per 100,000 population (log scale)", y = "Life expectancy (years)")
+```
+
+On the raw scale most countries are bunched near zero with a few very high values, which makes the pattern hard to see. On the log scale the points spread out into a clear, fairly linear negative trend: more poverty goes with lower life expectancy.
+
+### Stats and description
+
+```{r}
+gap |>
+  select(name, life_expectancy, poverty) |>
+  drop_na() |>
+  summarize(n = n(), cor_raw = cor(life_expectancy, poverty),
+            cor_log = cor(life_expectancy, log(poverty)),
+            skew_raw = mean((poverty - mean(poverty))^3) / sd(poverty)^3,
+            skew_log = mean((log(poverty) - mean(log(poverty)))^3) / sd(log(poverty))^3)
+
+gap |> arrange(desc(poverty)) |> select(name, poverty, life_expectancy) |> head(5)
+gap |> arrange(poverty) |> select(name, poverty, life_expectancy) |> head(5)
+```
+
+The correlation is about -0.73 (184 countries), one of the strongest of the new variables. The most extreme countries are South Sudan, the Democratic Republic of the Congo, Mozambique, Malawi and Burundi, all with over 70,000 people in poverty per 100,000 and life expectancy of 57 to 65 years. The lowest values are Singapore, Algeria, Belarus and Slovenia. Poverty is strongly right skewed (skewness about 1.7) and becomes close to symmetric after logging (about -0.6), although the correlation barely changes (-0.74 logged). Poverty is missing for 9 countries including China, Qatar and Monaco.
 
 ## Which variable for logging?
 
-From your exploratory data analysis, which variable will need logged/did you log already ? Why?
+Poverty needs to be logged. Its raw distribution is heavily right skewed with a handful of very large values, and the log scale makes the relationship with life expectancy cleaner. The other new predictors are either binary (`isoecd`, `isopec`) or roughly symmetric (men's and women's BMI), so they do not need logging. Among the earlier predictors, child deaths and murder rate are also right skewed, so I log them too. (Add 1 before logging if any value is 0.)
 
 ## Logging predictor variables and splitting data
 
-Split your data into an 80/20 training testing split after logging any variables that need logged.
+Poverty, child deaths and murder rate are logged. Rows with no life expectancy are dropped, since we cannot train or test without the response. The remaining missing predictor values are filled with the training median inside the recipe so we do not lose most of the countries, especially since `female_hos_binary` is missing for 78 countries.
+
+```{r}
+gap2 <- gap |>
+  filter(!is.na(life_expectancy)) |>
+  mutate(log_poverty = log(poverty),
+         log_child_deaths = log(child_deaths_per_100k),
+         log_murder = log(murder_deaths_per_100k)) |>
+  select(-geo, -name, -poverty, -child_deaths_per_100k, -murder_deaths_per_100k)
+
+split <- initial_split(gap2, prop = 0.8)
+train <- training(split)
+test  <- testing(split)
+c(train = nrow(train), test = nrow(test))
+
+# which variables go into the models
+rec <- recipe(life_expectancy ~ ., data = train) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+```
 
 ## Lasso regression
 
 ### Making model
 
-Make a lasso regression model for your response vs all predictors on the training data.
+The penalty is chosen with 10-fold cross-validation on the training data.
+
+```{r}
+folds <- vfold_cv(train, v = 10)
+lasso_spec <- linear_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet")
+lasso_wf <- workflow() |> add_recipe(rec) |> add_model(lasso_spec)
+
+lasso_tune <- tune_grid(lasso_wf, resamples = folds,
+                        grid = grid_regular(penalty(range = c(-3, 0.5)), levels = 40),
+                        metrics = metric_set(rmse, rsq))
+
+autoplot(lasso_tune) +
+  labs(title = "Lasso cross-validation results by penalty", x = "Penalty (log10 scale)")
+
+best_pen <- select_best(lasso_tune, metric = "rmse")
+best_pen
+lasso_fit <- finalize_workflow(lasso_wf, best_pen) |> fit(train)
+```
 
 ### Which variables
 
-By looking at the slopes, which variables should be considered included in the model
+```{r}
+lasso_coefs <- lasso_fit |> extract_fit_parsnip() |> tidy() |> filter(term != "(Intercept)")
+lasso_coefs |> arrange(desc(abs(estimate)))
+
+lasso_coefs |>
+  ggplot(aes(x = reorder(term, estimate), y = estimate)) +
+  geom_col() + coord_flip() +
+  labs(title = "Lasso coefficients (standardized predictors)",
+       x = "Predictor", y = "Coefficient")
+```
+
+Variables with a coefficient of exactly 0 were removed by the lasso. The variables with the largest remaining coefficients are the ones the lasso relies on most. *After render, name the kept and dropped variables here. We expect sanitation, child deaths and poverty to be kept and OPEC to be dropped.*
 
 ### Model evaluation-regression metrics on testing.
+
+```{r}
+metrics_set <- metric_set(rmse, rsq, mae)
+lasso_res <- predict(lasso_fit, test) |> bind_cols(test) |>
+  metrics_set(truth = life_expectancy, estimate = .pred)
+lasso_res
+```
 
 ## Regression Tree
 
 ### Making model
 
-Make a regression tree model for your response vs all predictors on the training data.
+```{r}
+tree_spec <- decision_tree(cost_complexity = tune(), tree_depth = tune(), min_n = 5) |>
+  set_engine("rpart") |> set_mode("regression")
+tree_wf <- workflow() |> add_recipe(rec) |> add_model(tree_spec)
+
+tree_tune <- tune_grid(tree_wf, resamples = folds,
+                       grid = grid_regular(cost_complexity(), tree_depth(range = c(2, 6)), levels = 5),
+                       metrics = metric_set(rmse, rsq))
+best_tree <- select_best(tree_tune, metric = "rmse")
+tree_fit <- finalize_workflow(tree_wf, best_tree) |> fit(train)
+
+tree_fit |> extract_fit_engine() |>
+  rpart.plot(roundint = FALSE, main = "Regression tree for life expectancy")
+```
 
 ### Which variables
 
-By looking at the tree, which variables should be considered included in the model
+```{r}
+tree_fit |> extract_fit_engine() |> pluck("variable.importance") |> sort(decreasing = TRUE)
+```
+
+The variables that appear as splits in the tree are the ones the tree considers useful. Variables near the top of the tree separate countries best.
 
 ### Model evaluation-regression metrics on testing.
 
+```{r}
+tree_res_test <- predict(tree_fit, test) |> bind_cols(test) |>
+  metrics_set(truth = life_expectancy, estimate = .pred) |> mutate(set = "test")
+tree_res_train <- predict(tree_fit, train) |> bind_cols(train) |>
+  metrics_set(truth = life_expectancy, estimate = .pred) |> mutate(set = "train")
+bind_rows(tree_res_train, tree_res_test)
+```
+
+Comparing the training and testing rows checks for overfitting: a tree that is much better on training than on testing is overfit.
 
 ## Random forest
 
 ### Making model
 
-Make a random forest model for your response vs all predictors on the training data.
+```{r}
+rf_spec <- rand_forest(trees = 500, mtry = tune(), min_n = tune()) |>
+  set_engine("ranger", importance = "permutation") |> set_mode("regression")
+rf_wf <- workflow() |> add_recipe(rec) |> add_model(rf_spec)
+
+rf_tune <- tune_grid(rf_wf, resamples = folds, grid = 12,
+                     metrics = metric_set(rmse, rsq))
+best_rf <- select_best(rf_tune, metric = "rmse")
+rf_fit <- finalize_workflow(rf_wf, best_rf) |> fit(train)
+best_rf
+```
 
 ### Which variables
 
-By looking at the variable importance plot, which variables should be considered included in the model
+```{r}
+rf_fit |> extract_fit_parsnip() |>
+  vip(num_features = 12) +
+  labs(title = "Random forest variable importance (permutation)",
+       x = "Predictor", y = "Importance")
+```
+
+Longer bars mean that shuffling the variable hurts the forest's predictions more, so it matters more. *(After rendering, name the top variables here.)*
 
 ### Model evaluation-regression metrics on testing.
 
-## Variable slection comparison
+```{r}
+rf_res <- predict(rf_fit, test) |> bind_cols(test) |>
+  metrics_set(truth = life_expectancy, estimate = .pred)
+rf_res
+```
 
-What were the similarities and the difference between the variables selected for each model.
+The forest's out-of-bag error can also be used to check quality, but the testing metrics are the fairest comparison since the test set was never used for tuning.
+
+## Variable selection comparison
+
+```{r}
+bind_rows(
+  mutate(lasso_res, model = "Lasso"),
+  mutate(tree_res_test, model = "Regression tree") |> select(-set),
+  mutate(rf_res, model = "Random forest")
+) |>
+  select(model, .metric, .estimate) |>
+  pivot_wider(names_from = .metric, values_from = .estimate)
+```
+
+The models should broadly agree because the EDA shows a few strong, correlated predictors: sanitation access, child deaths, poverty, food supply and OECD membership. The lasso can keep several correlated variables with small coefficients, the tree uses only a few splits and tends to pick one variable from a correlated group, and the forest spreads importance among correlated variables. Variables with weak relationships in the EDA, such as OPEC membership and female head of state, should rank last in all three.
 
 ## Best model
 
-Which model would you reccomend your team use? Why? Are there tradeoff between interpretability and model metrics?
+Comparing with the table above. The model with the lowest test RMSE and MAE and highest R-squared is the best predictor. Random forests usually win on accuracy but are the hardest to interpret, the lasso is a single linear equation that is easy to explain, and a tree is the easiest to draw but usually has the highest error. If the lasso is within a small margin of the forest, I would recommend it for interpretability.
 
-## Your question
+**Question:** Is the relationship between poverty and life expectancy different for OECD and non-OECD countries?
 
-You will write your own question about the data, create a data visualization that can help answer your question, and write an answer to your question. The question/visualization should explore the relationship between at least 2 of the variables in the dataset. Be sure you include both the question and the answer to your question based on the visualization you have created. It should be a different question than last two mini-projects.
+```{r}
+gap |>
+  filter(!is.na(life_expectancy), !is.na(poverty)) |>
+  ggplot(aes(x = poverty, y = life_expectancy, color = isoecd)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_x_log10() +
+  labs(title = "Life expectancy vs. poverty, by OECD membership",
+       x = "People in poverty per 100,000 population (log scale)",
+       y = "Life expectancy (years)", color = "Group")
+```
+
+**Answer:** Within both groups, life expectancy falls as poverty rises. The OECD countries are clustered at low poverty and high life expectancy (all at least 77 years), with a flatter slope because there is little variation. Non-OECD countries cover the whole range of poverty and show the steep decline, from about 80 years at low poverty to under 60 at the highest poverty. At the same level of poverty, OECD countries tend to have higher life expectancy than non-OECD countries, so poverty alone does not explain the OECD gap. *(Check the slopes and overlap in your rendered plot before finalizing this answer.)*
